@@ -1,56 +1,55 @@
 # Z-API + Supabase — WhatsApp Message Sender
 
-Script Python que busca contatos ativos no Supabase e dispara mensagens personalizadas via WhatsApp usando a Z-API. Simples de configurar, fácil de adaptar para o seu caso.
-
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 ![Supabase](https://img.shields.io/badge/Supabase-2.10.0-green)
 ![Z-API](https://img.shields.io/badge/WhatsApp-Z--API-brightgreen)
+![License](https://img.shields.io/badge/license-MIT-lightgrey)
+
+Script Python para disparos de WhatsApp em lote — busca contatos ativos no Supabase, aplica o template escolhido, registra o resultado no banco e respeita um intervalo entre envios para evitar bloqueios.
 
 ---
 
-## Como funciona
+## Funcionalidades
 
-O script segue um fluxo direto:
-
-1. Conecta ao Supabase e busca todos os contatos com `active = true`
-2. Valida o formato do número antes de fazer qualquer chamada à API — telefones fora do padrão são logados e pulados
-3. Envia `"Olá, {nome} tudo bem com você?"` via Z-API para cada contato válido
-4. Exibe no terminal o resultado de cada envio e um resumo final (enviados / falhas)
+- **Templates de mensagem** configuráveis via CLI, sem editar código
+- **Registro de envios** no banco: `sent_at`, `last_status`, `last_template`, `last_attempted_at`
+- **Filtro de pendentes** — só processa contatos que ainda não receberam mensagem (`sent_at IS NULL`)
+- **Dry-run** para simular disparos sem chamar a Z-API nem gravar no banco
+- **Delay configurável** entre envios para não acionar filtros de spam
+- **Validação de telefone** antes de qualquer chamada à API
 
 ---
 
 ## Pré-requisitos
 
 - Python 3.9 ou superior
-- Conta ativa na [Z-API](https://www.z-api.io/) com uma instância WhatsApp conectada
+- Conta ativa na [Z-API](https://www.z-api.io/) com instância WhatsApp conectada
 - Projeto criado no [Supabase](https://supabase.com/)
 
 ---
 
-## Configuração do Supabase
+## Configuração do banco
 
-Crie a tabela `contacts` no seu projeto:
+Execute o arquivo `schema.sql` no SQL Editor do Supabase:
 
 ```sql
 CREATE TABLE contacts (
-    id      BIGSERIAL PRIMARY KEY,
-    name    TEXT    NOT NULL,
-    phone   TEXT    NOT NULL,
-    active  BOOLEAN NOT NULL DEFAULT TRUE
+    id                 BIGSERIAL PRIMARY KEY,
+    name               TEXT        NOT NULL,
+    phone              TEXT        NOT NULL,
+    active             BOOLEAN     NOT NULL DEFAULT TRUE,
+    sent_at            TIMESTAMPTZ,
+    last_attempted_at  TIMESTAMPTZ,
+    last_template      TEXT,
+    last_status        TEXT
 );
+
+CREATE INDEX idx_contacts_pending ON contacts (active, sent_at)
+    WHERE active = TRUE AND sent_at IS NULL;
 ```
 
-Insira seus contatos:
-
-```sql
-INSERT INTO contacts (name, phone, active) VALUES
-    ('Eduardo',  '5511999999991', true),
-    ('Victoria', '5511999999992', true),
-    ('Carlos',   '5511999999993', false);  -- ignorado pelo filtro active = true
-```
-
-> O campo `phone` aceita apenas dígitos, sem `+`, espaços ou traços (DDI + DDD + número).
-> Formato esperado: `5511912345678`
+O campo `phone` aceita apenas dígitos, sem `+`, espaços ou traços (DDI + DDD + número).
+Formato esperado: `5511912345678`
 
 ---
 
@@ -81,52 +80,79 @@ ZAPI_TOKEN=seu_token
 ZAPI_CLIENT_TOKEN=seu_client_token
 ```
 
-As credenciais da Z-API estão disponíveis no painel da instância em [app.z-api.io](https://app.z-api.io).
+As credenciais Z-API estão disponíveis no painel da instância em [app.z-api.io](https://app.z-api.io).
 
 ---
 
-## Execução
+## Uso
+
+**Disparo padrão:**
 
 ```bash
 python main.py
 ```
 
-Saída esperada:
+**Com template e limite específicos:**
 
+```bash
+python main.py --template promocao --limit 100 --delay 3
 ```
-2025-01-15 10:32:01 [INFO] 2 contato(s) encontrado(s)
-2025-01-15 10:32:02 [INFO] mensagem enviada pra Eduardo (5511999999991)
-2025-01-15 10:32:03 [INFO] mensagem enviada pra Victoria (5511999999992)
-2025-01-15 10:32:03 [INFO] fim — 2 enviado(s), 0 falha(s)
+
+**Dry-run — simula sem enviar nem gravar:**
+
+```bash
+python main.py --template lembrete --dry-run
 ```
+
+**Todos os parâmetros disponíveis:**
+
+| Parâmetro | Padrão | Descrição |
+|---|---|---|
+| `--template` | `default` | Template de mensagem: `default`, `promocao`, `lembrete`, `reativacao` |
+| `--limit` | `50` | Máximo de contatos por execução |
+| `--delay` | `2.0` | Intervalo em segundos entre cada envio |
+| `--dry-run` | — | Simula sem chamar Z-API nem gravar no banco |
 
 ---
 
-## Personalizando a mensagem
+## Templates disponíveis
 
-Edite o texto diretamente em `main.py`, na função `send_whatsapp()`:
-
-```python
-payload = {
-    "phone": phone,
-    "message": f"Olá, {name} tudo bem com você?",
-}
-```
-
-O `{name}` é substituído automaticamente pelo nome do contato vindo do banco.
-
----
-
-## Comportamentos do script
-
-| Ponto | Detalhe |
+| Template | Mensagem |
 |---|---|
-| Limite de contatos | Busca até 3 por execução — ajuste o `.limit(3)` em `get_contacts()` conforme necessário |
-| Filtro | Só processa contatos com `active = true` |
-| Validação de telefone | Aceita entre 10 e 15 dígitos numéricos; fora disso, pula e loga aviso |
-| Erros de envio | Erros HTTP e falhas de rede são capturados individualmente — o script não para no primeiro erro |
-| Delay | Não há pausa entre os envios; adicione `time.sleep()` se quiser evitar bloqueios por spam |
-| Registro | Os envios não são gravados no banco — implemente uma coluna `sent_at` se precisar rastrear |
+| `default` | Olá, {name}! Tudo bem com você? |
+| `promocao` | Oi, {name}! Temos uma novidade especial esperando por você. |
+| `lembrete` | Olá, {name}. Passando para lembrar do seu compromisso. |
+| `reativacao` | Sentimos sua falta, {name}! Que tal a gente retomar o contato? |
+
+Para adicionar novos templates, edite o dicionário `TEMPLATES` no início de `main.py`.
+
+---
+
+## Saída esperada
+
+```
+2025-01-15 10:32:01 [INFO] 3 contato(s) encontrado(s) | template: promocao | delay: 2.0s
+2025-01-15 10:32:03 [INFO] enviado → Eduardo (5511999999991)
+2025-01-15 10:32:05 [INFO] enviado → Victoria (5511999999992)
+2025-01-15 10:32:07 [INFO] enviado → Carlos (5511999999993)
+2025-01-15 10:32:07 [INFO] concluído — 3 enviado(s), 0 falha(s)
+```
+
+---
+
+## Agendamento
+
+Para rodar automaticamente (ex: todo dia às 9h), adicione ao cron:
+
+```bash
+crontab -e
+```
+
+```
+0 9 * * * /caminho/para/.venv/bin/python /caminho/para/main.py --template default
+```
+
+Ou via **GitHub Actions** criando um workflow com `schedule: cron`.
 
 ---
 
@@ -140,4 +166,6 @@ O `{name}` é substituído automaticamente pelo nome do contato vindo do banco.
 
 ---
 
-Projeto simples, funcional e fácil de customizar. Contribuições são bem-vindas.
+## Licença
+
+[MIT](LICENSE)
